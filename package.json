@@ -1,25 +1,28 @@
 {
-  "name": "backend-turso-users-api",
+  "name": "users-api",
   "version": "1.0.0",
-  "description": "Production-ready REST API with Node.js, Express, and Turso Cloud Database",
-  "main": "server.js",
+  "description": "RESTful Users CRUD API – Node.js, Express, Turso (libSQL), Vercel",
+  "main": "api/index.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
+    "start": "node api/index.js",
+    "dev": "nodemon api/index.js"
   },
-  "dependencies": {
-    "@libsql/client": "^0.14.0",
-    "bcrypt": "^5.1.1",
-    "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
-    "express": "^4.19.2"
-  },
-  "engines": {
-    "node": ">=18.x"
-  },
+  "keywords": ["nodejs", "express", "turso", "libsql", "crud", "api", "vercel"],
   "author": "",
   "license": "ISC",
+  "dependencies": {
+    "@libsql/client": "^0.14.0",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "helmet": "^7.1.0",
+    "morgan": "^1.10.0"
+  },
   "devDependencies": {
-    "vercel": "^58.9.0"
+    "nodemon": "^3.1.4"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
