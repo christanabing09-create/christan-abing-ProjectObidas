@@ -25,11 +25,13 @@ const sanitizeUser = (row) => {
 const isMissing = (value) =>
   value === undefined || value === null || value === '';
 
+const normalizeEmail = (email) => String(email).trim().toLowerCase();
+
 const findUserByEmail = async (email, excludeId = null) => {
-  const normalizedEmail = String(email).trim().toLowerCase();
+  const normalizedEmail = normalizeEmail(email);
   const sql = excludeId
-    ? 'SELECT user_id FROM users WHERE LOWER(email) = LOWER(?) AND user_id != ?'
-    : 'SELECT user_id FROM users WHERE LOWER(email) = LOWER(?)';
+    ? 'SELECT user_id FROM users WHERE email = ? AND user_id != ?'
+    : 'SELECT user_id FROM users WHERE email = ?';
   const args = excludeId ? [normalizedEmail, excludeId] : [normalizedEmail];
   const result = await db.execute({ sql, args });
   return result.rows[0] || null;
@@ -119,7 +121,8 @@ const createUser = async (req, res, next) => {
       isActive,
     } = body;
 
-    const existingEmail = await findUserByEmail(email);
+    const normalizedEmail = normalizeEmail(email);
+    const existingEmail = await findUserByEmail(normalizedEmail);
     if (existingEmail) {
       return res.status(409).json({
         success: false,
@@ -146,7 +149,7 @@ const createUser = async (req, res, next) => {
         String(gender),
         Number(user_level),
         String(branch_cd),
-        String(email),
+        normalizedEmail,
         String(user_activation_key),
         Number(isActive),
       ],
@@ -205,11 +208,12 @@ const updateUser = async (req, res, next) => {
     const updatedGender          = !isMissing(body.gender)               ? String(body.gender)               : current.gender;
     const updatedUserLevel       = !isMissing(body.user_level)           ? Number(body.user_level)           : current.user_level;
     const updatedBranchCd        = !isMissing(body.branch_cd)            ? String(body.branch_cd)            : current.branch_cd;
-    const updatedEmail           = !isMissing(body.email)                ? String(body.email)                : current.email;
-    const updatedActivationKey   = !isMissing(body.user_activation_key)  ? String(body.user_activation_key)  : current.user_activation_key;
-    const updatedIsActive        = body.isActive !== undefined            ? Number(body.isActive)             : current.isActive;
+    const updatedEmailRaw       = !isMissing(body.email)                ? String(body.email)                : current.email;
+    const updatedEmail          = normalizeEmail(updatedEmailRaw);
+    const updatedActivationKey  = !isMissing(body.user_activation_key)  ? String(body.user_activation_key)  : current.user_activation_key;
+    const updatedIsActive       = body.isActive !== undefined            ? Number(body.isActive)             : current.isActive;
 
-    if (updatedEmail.toLowerCase() !== current.email.toLowerCase()) {
+    if (updatedEmail !== normalizeEmail(current.email)) {
       const existingEmail = await findUserByEmail(updatedEmail, id);
       if (existingEmail) {
         return res.status(409).json({

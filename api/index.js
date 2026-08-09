@@ -40,9 +40,11 @@ const initDatabase = async () => {
       email                TEXT     NOT NULL DEFAULT '',
       registered           TEXT     NOT NULL DEFAULT (datetime('now')),
       user_activation_key  TEXT     NOT NULL DEFAULT '',
-      isActive             INTEGER  NOT NULL DEFAULT 1,
-      UNIQUE(email)
+      isActive             INTEGER  NOT NULL DEFAULT 1
     )
+  `);
+  await db.execute(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email)
   `);
   console.log('[DB] users table is ready.');
 };
