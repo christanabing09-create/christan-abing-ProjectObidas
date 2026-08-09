@@ -26,7 +26,7 @@ const isMissing = (value) =>
   value === undefined || value === null || value === '';
 
 const normalizeEmail = (email) => String(email).trim().toLowerCase();
-const normalizeLogin = (login) => String(login).trim();
+const normalizeLogin = (login) => String(login).trim().toLowerCase();
 
 const findUserByEmail = async (email, excludeId = null) => {
   const normalizedEmail = normalizeEmail(email);
@@ -162,7 +162,7 @@ const createUser = async (req, res, next) => {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       args: [
-        String(user_login),
+        normalizedLogin,
         hashedPassword,
         String(fname),
         String(lname),
