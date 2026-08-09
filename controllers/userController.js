@@ -1,43 +1,81 @@
 'use strict';
 
-const userModel          = require('../models/userModel');
-const { hashPassword }   = require('../utils/hash');
+const bcrypt = require('bcryptjs');
+const db     = require('../config/database');
 
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /api/users
-// ─────────────────────────────────────────────────────────────────────────────
-async function getAllUsers(req, res, next) {
+const SALT_ROUNDS = 10;
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/**
+ * Convert a libsql Row (array-like with named props) to a plain JS object
+ * and strip the password hash before sending to the client.
+ */
+const sanitizeUser = (row) => {
+  // Spread into a plain object so destructuring works reliably
+  const plain = Object.assign({}, row);
+  // Remove the password hash – never expose it in API responses
+  delete plain.user_pass;
+  return plain;
+};
+
+/**
+ * Quick field-presence check. Accepts 0 and false as valid values.
+ */
+const isMissing = (value) =>
+  value === undefined || value === null || value === '';
+
+const findUserByEmail = async (email, excludeId = null) => {
+  const normalizedEmail = String(email).trim().toLowerCase();
+  const sql = excludeId
+    ? 'SELECT user_id FROM users WHERE LOWER(email) = LOWER(?) AND user_id != ?'
+    : 'SELECT user_id FROM users WHERE LOWER(email) = LOWER(?)';
+  const args = excludeId ? [normalizedEmail, excludeId] : [normalizedEmail];
+  const result = await db.execute({ sql, args });
+  return result.rows[0] || null;
+};
+
+// ─── Required fields for POST ─────────────────────────────────────────────────
+const REQUIRED_FIELDS = [
+  'user_login',
+  'user_pass',
+  'fname',
+  'lname',
+  'gender',
+  'user_level',
+  'branch_cd',
+  'email',
+  'user_activation_key',
+  'isActive',
+];
+
+// ─── GET /api/users ──────────────────────────────────────────────────────────
+const getAllUsers = async (req, res, next) => {
   try {
-    const users = await userModel.findAll();
+    const result = await db.execute('SELECT * FROM users ORDER BY user_id ASC');
+    const users  = result.rows.map(sanitizeUser);
 
     return res.status(200).json({
       success: true,
       message: 'Users retrieved successfully',
-      count:   users.length,
       data:    users,
     });
   } catch (err) {
-    next(err);
+    return next(err);
   }
-}
+};
 
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /api/users/:id
-// ─────────────────────────────────────────────────────────────────────────────
-async function getUserById(req, res, next) {
+// ─── GET /api/users/:id ──────────────────────────────────────────────────────
+const getUserById = async (req, res, next) => {
   try {
-    const id   = parseInt(req.params.id, 10);
+    const { id } = req.params;
 
-    if (isNaN(id) || id < 1) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid user ID — must be a positive integer',
-      });
-    }
+    const result = await db.execute({
+      sql:  'SELECT * FROM users WHERE user_id = ?',
+      args: [id],
+    });
 
-    const user = await userModel.findById(id);
-
-    if (!user) {
+    if (result.rows.length === 0) {
       return res.status(404).json({
         success: false,
         message: 'User not found',
@@ -47,18 +85,27 @@ async function getUserById(req, res, next) {
     return res.status(200).json({
       success: true,
       message: 'User retrieved successfully',
-      data:    user,
+      data:    sanitizeUser(result.rows[0]),
     });
   } catch (err) {
-    next(err);
+    return next(err);
   }
-}
+};
 
-// ─────────────────────────────────────────────────────────────────────────────
-// POST /api/users
-// ─────────────────────────────────────────────────────────────────────────────
-async function createUser(req, res, next) {
+// ─── POST /api/users ─────────────────────────────────────────────────────────
+const createUser = async (req, res, next) => {
   try {
+    const body = req.body;
+
+    // ── Validate required fields ──────────────────────────────────────────────
+    const missing = REQUIRED_FIELDS.filter((f) => isMissing(body[f]));
+    if (missing.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Missing required fields: ${missing.join(', ')}`,
+      });
+    }
+
     const {
       user_login,
       user_pass,
@@ -70,187 +117,191 @@ async function createUser(req, res, next) {
       email,
       user_activation_key,
       isActive,
-    } = req.body;
+    } = body;
 
-    // ── Required field validation ─────────────────────────────────────────────
-    const missing = [];
-    if (!user_login || String(user_login).trim() === '') missing.push('user_login');
-    if (!user_pass  || String(user_pass).trim()  === '') missing.push('user_pass');
-    if (!fname      || String(fname).trim()      === '') missing.push('fname');
-    if (!lname      || String(lname).trim()      === '') missing.push('lname');
-    if (!gender     || String(gender).trim()     === '') missing.push('gender');
-
-    if (missing.length > 0) {
-      return res.status(400).json({
-        success: false,
-        message: `Missing required fields: ${missing.join(', ')}`,
-      });
-    }
-
-    // ── Uniqueness check on user_login ────────────────────────────────────────
-    const existing = await userModel.findByLogin(String(user_login).trim());
-    if (existing) {
+    const existingEmail = await findUserByEmail(email);
+    if (existingEmail) {
       return res.status(409).json({
         success: false,
-        message: `Username "${user_login}" is already taken`,
+        message: 'Email is already in use',
       });
     }
 
-    // ── Hash password before storing ──────────────────────────────────────────
-    const hashedPassword = await hashPassword(String(user_pass));
+    // ── Hash the password before storing ─────────────────────────────────────
+    const hashedPassword = await bcrypt.hash(String(user_pass), SALT_ROUNDS);
 
-    // ── Persist ───────────────────────────────────────────────────────────────
-    const newUser = await userModel.create({
-      user_login:          String(user_login).trim(),
-      user_pass:           hashedPassword,
-      fname:               String(fname).trim(),
-      lname:               String(lname).trim(),
-      gender:              String(gender).trim(),
-      user_level:          user_level  !== undefined ? Number(user_level)  : 0,
-      branch_cd:           branch_cd   !== undefined ? String(branch_cd)   : '',
-      email:               email       !== undefined ? String(email)       : '',
-      user_activation_key: user_activation_key !== undefined
-                             ? String(user_activation_key)
-                             : '',
-      isActive:            isActive !== undefined ? Number(isActive) : 1,
+    // ── Insert ────────────────────────────────────────────────────────────────
+    const insertResult = await db.execute({
+      sql: `
+        INSERT INTO users
+          (user_login, user_pass, fname, lname, gender,
+           user_level, branch_cd, email, user_activation_key, isActive)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      args: [
+        String(user_login),
+        hashedPassword,
+        String(fname),
+        String(lname),
+        String(gender),
+        Number(user_level),
+        String(branch_cd),
+        String(email),
+        String(user_activation_key),
+        Number(isActive),
+      ],
+    });
+
+    // lastInsertRowid is a BigInt in newer libsql versions – convert safely
+    const newId = Number(insertResult.lastInsertRowid);
+
+    // ── Fetch the newly created row to return it ──────────────────────────────
+    const newUserResult = await db.execute({
+      sql:  'SELECT * FROM users WHERE user_id = ?',
+      args: [newId],
     });
 
     return res.status(201).json({
       success: true,
       message: 'User created successfully',
-      data:    newUser,
+      data:    sanitizeUser(newUserResult.rows[0]),
     });
   } catch (err) {
-    next(err);
+    return next(err);
   }
-}
+};
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PUT /api/users/:id
-// ─────────────────────────────────────────────────────────────────────────────
-async function updateUser(req, res, next) {
+// ─── PUT /api/users/:id ──────────────────────────────────────────────────────
+const updateUser = async (req, res, next) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const { id } = req.params;
 
-    if (isNaN(id) || id < 1) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid user ID — must be a positive integer',
-      });
-    }
+    // ── Confirm the user exists ───────────────────────────────────────────────
+    const existing = await db.execute({
+      sql:  'SELECT * FROM users WHERE user_id = ?',
+      args: [id],
+    });
 
-    // ── Check user exists ─────────────────────────────────────────────────────
-    const existingUser = await userModel.findById(id);
-    if (!existingUser) {
+    if (existing.rows.length === 0) {
       return res.status(404).json({
         success: false,
         message: 'User not found',
       });
     }
 
-    // ── Build the update payload ──────────────────────────────────────────────
-    const {
-      user_login,
-      user_pass,          // optional — only hash if provided
-      fname,
-      lname,
-      gender,
-      user_level,
-      branch_cd,
-      email,
-      user_activation_key,
-      isActive,
-    } = req.body;
+    const current = Object.assign({}, existing.rows[0]);
+    const body    = req.body;
 
-    const updateFields = {};
+    // ── If a new password is supplied, hash it; otherwise keep the old hash ───
+    let hashedPassword = current.user_pass;
+    if (!isMissing(body.user_pass)) {
+      hashedPassword = await bcrypt.hash(String(body.user_pass), SALT_ROUNDS);
+    }
 
-    if (user_login !== undefined) {
-      const trimmed = String(user_login).trim();
-      if (trimmed === '') {
-        return res.status(400).json({
-          success: false,
-          message: 'user_login cannot be empty',
-        });
-      }
-      // Uniqueness check (exclude current user's own row)
-      const taken = await userModel.findByLogin(trimmed, id);
-      if (taken) {
+    // ── Use incoming value if provided, otherwise fall back to current value ──
+    const updatedLogin           = !isMissing(body.user_login)           ? String(body.user_login)           : current.user_login;
+    const updatedFname           = !isMissing(body.fname)                ? String(body.fname)                : current.fname;
+    const updatedLname           = !isMissing(body.lname)                ? String(body.lname)                : current.lname;
+    const updatedGender          = !isMissing(body.gender)               ? String(body.gender)               : current.gender;
+    const updatedUserLevel       = !isMissing(body.user_level)           ? Number(body.user_level)           : current.user_level;
+    const updatedBranchCd        = !isMissing(body.branch_cd)            ? String(body.branch_cd)            : current.branch_cd;
+    const updatedEmail           = !isMissing(body.email)                ? String(body.email)                : current.email;
+    const updatedActivationKey   = !isMissing(body.user_activation_key)  ? String(body.user_activation_key)  : current.user_activation_key;
+    const updatedIsActive        = body.isActive !== undefined            ? Number(body.isActive)             : current.isActive;
+
+    if (updatedEmail.toLowerCase() !== current.email.toLowerCase()) {
+      const existingEmail = await findUserByEmail(updatedEmail, id);
+      if (existingEmail) {
         return res.status(409).json({
           success: false,
-          message: `Username "${trimmed}" is already taken`,
+          message: 'Email is already in use',
         });
       }
-      updateFields.user_login = trimmed;
     }
 
-    if (user_pass !== undefined) {
-      if (String(user_pass).trim() === '') {
-        return res.status(400).json({
-          success: false,
-          message: 'user_pass cannot be empty',
-        });
-      }
-      updateFields.user_pass = await hashPassword(String(user_pass));
-    }
+    await db.execute({
+      sql: `
+        UPDATE users SET
+          user_login          = ?,
+          user_pass           = ?,
+          fname               = ?,
+          lname               = ?,
+          gender              = ?,
+          user_level          = ?,
+          branch_cd           = ?,
+          email               = ?,
+          user_activation_key = ?,
+          isActive            = ?
+        WHERE user_id = ?
+      `,
+      args: [
+        updatedLogin,
+        hashedPassword,
+        updatedFname,
+        updatedLname,
+        updatedGender,
+        updatedUserLevel,
+        updatedBranchCd,
+        updatedEmail,
+        updatedActivationKey,
+        updatedIsActive,
+        id,
+      ],
+    });
 
-    if (fname               !== undefined) updateFields.fname               = String(fname).trim();
-    if (lname               !== undefined) updateFields.lname               = String(lname).trim();
-    if (gender              !== undefined) updateFields.gender              = String(gender).trim();
-    if (user_level          !== undefined) updateFields.user_level          = Number(user_level);
-    if (branch_cd           !== undefined) updateFields.branch_cd           = String(branch_cd);
-    if (email               !== undefined) updateFields.email               = String(email);
-    if (user_activation_key !== undefined) updateFields.user_activation_key = String(user_activation_key);
-    if (isActive            !== undefined) updateFields.isActive            = Number(isActive);
-
-    if (Object.keys(updateFields).length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'No valid fields provided for update',
-      });
-    }
-
-    const updatedUser = await userModel.update(id, updateFields);
+    // ── Return the updated row ────────────────────────────────────────────────
+    const updated = await db.execute({
+      sql:  'SELECT * FROM users WHERE user_id = ?',
+      args: [id],
+    });
 
     return res.status(200).json({
       success: true,
       message: 'User updated successfully',
-      data:    updatedUser,
+      data:    sanitizeUser(updated.rows[0]),
     });
   } catch (err) {
-    next(err);
+    return next(err);
   }
-}
+};
 
-// ─────────────────────────────────────────────────────────────────────────────
-// DELETE /api/users/:id
-// ─────────────────────────────────────────────────────────────────────────────
-async function deleteUser(req, res, next) {
+// ─── DELETE /api/users/:id ───────────────────────────────────────────────────
+const deleteUser = async (req, res, next) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const { id } = req.params;
 
-    if (isNaN(id) || id < 1) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid user ID — must be a positive integer',
-      });
-    }
+    const existing = await db.execute({
+      sql:  'SELECT user_id, fname, lname FROM users WHERE user_id = ?',
+      args: [id],
+    });
 
-    const deleted = await userModel.remove(id);
-
-    if (!deleted) {
+    if (existing.rows.length === 0) {
       return res.status(404).json({
         success: false,
         message: 'User not found',
       });
     }
 
+    await db.execute({
+      sql:  'DELETE FROM users WHERE user_id = ?',
+      args: [id],
+    });
+
     return res.status(200).json({
       success: true,
       message: 'User deleted successfully',
+      data:    null,
     });
   } catch (err) {
-    next(err);
+    return next(err);
   }
-}
+};
 
-module.exports = { getAllUsers, getUserById, createUser, updateUser, deleteUser };
+// ─── Exports ─────────────────────────────────────────────────────────────────
+module.exports = {
+  getAllUsers,
+  getUserById,
+  createUser,
+  updateUser,
+  deleteUser,
+};
