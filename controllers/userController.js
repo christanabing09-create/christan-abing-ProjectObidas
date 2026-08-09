@@ -26,6 +26,7 @@ const isMissing = (value) =>
   value === undefined || value === null || value === '';
 
 const normalizeEmail = (email) => String(email).trim().toLowerCase();
+const normalizeLogin = (login) => String(login).trim();
 
 const findUserByEmail = async (email, excludeId = null) => {
   const normalizedEmail = normalizeEmail(email);
@@ -33,6 +34,16 @@ const findUserByEmail = async (email, excludeId = null) => {
     ? 'SELECT user_id FROM users WHERE email = ? AND user_id != ?'
     : 'SELECT user_id FROM users WHERE email = ?';
   const args = excludeId ? [normalizedEmail, excludeId] : [normalizedEmail];
+  const result = await db.execute({ sql, args });
+  return result.rows[0] || null;
+};
+
+const findUserByLogin = async (userLogin, excludeId = null) => {
+  const normalizedLogin = normalizeLogin(userLogin);
+  const sql = excludeId
+    ? 'SELECT user_id FROM users WHERE user_login = ? AND user_id != ?'
+    : 'SELECT user_id FROM users WHERE user_login = ?';
+  const args = excludeId ? [normalizedLogin, excludeId] : [normalizedLogin];
   const result = await db.execute({ sql, args });
   return result.rows[0] || null;
 };
@@ -121,6 +132,15 @@ const createUser = async (req, res, next) => {
       isActive,
     } = body;
 
+    const normalizedLogin = normalizeLogin(user_login);
+    const existingLogin = await findUserByLogin(normalizedLogin);
+    if (existingLogin) {
+      return res.status(409).json({
+        success: false,
+        message: 'user_login is already in use',
+      });
+    }
+
     const normalizedEmail = normalizeEmail(email);
     const existingEmail = await findUserByEmail(normalizedEmail);
     if (existingEmail) {
@@ -202,7 +222,8 @@ const updateUser = async (req, res, next) => {
     }
 
     // ── Use incoming value if provided, otherwise fall back to current value ──
-    const updatedLogin           = !isMissing(body.user_login)           ? String(body.user_login)           : current.user_login;
+    const updatedLoginRaw       = !isMissing(body.user_login)           ? String(body.user_login)           : current.user_login;
+    const updatedLogin          = normalizeLogin(updatedLoginRaw);
     const updatedFname           = !isMissing(body.fname)                ? String(body.fname)                : current.fname;
     const updatedLname           = !isMissing(body.lname)                ? String(body.lname)                : current.lname;
     const updatedGender          = !isMissing(body.gender)               ? String(body.gender)               : current.gender;
@@ -212,6 +233,16 @@ const updateUser = async (req, res, next) => {
     const updatedEmail          = normalizeEmail(updatedEmailRaw);
     const updatedActivationKey  = !isMissing(body.user_activation_key)  ? String(body.user_activation_key)  : current.user_activation_key;
     const updatedIsActive       = body.isActive !== undefined            ? Number(body.isActive)             : current.isActive;
+
+    if (updatedLogin !== current.user_login) {
+      const existingLogin = await findUserByLogin(updatedLogin, id);
+      if (existingLogin) {
+        return res.status(409).json({
+          success: false,
+          message: 'user_login is already in use',
+        });
+      }
+    }
 
     if (updatedEmail !== normalizeEmail(current.email)) {
       const existingEmail = await findUserByEmail(updatedEmail, id);

@@ -46,6 +46,9 @@ const initDatabase = async () => {
   await db.execute(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email)
   `);
+  await db.execute(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_user_login ON users(user_login)
+  `);
   console.log('[DB] users table is ready.');
 };
 
